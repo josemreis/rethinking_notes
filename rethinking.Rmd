@@ -197,7 +197,7 @@ prior_dta <- tibble(p_1 = rep(c("w", "b"), times = c(1, 4)),
          conjecture = paste("conj.", row_number(), sep = " ")) %>%
   unite(hypothesis, c("p_1", "p_2", "p_3", "p_4"), sep = ",") %>%
   unite(conjecture, c(conjecture, hypothesis), sep = ": ") %>%
-  select(conjecture, everything())
+  dplyr::select(conjecture, everything())
 
 prior_dta %>% 
   knitr::kable()
@@ -210,7 +210,7 @@ prior_dta %>%
 update_dta <- prior_dta %>% 
   rename(`prior counts` = `ways to produce`,
          `ways to produce new b` = `draw 1: blue`) %>% 
-  select(conjecture, `prior counts`, `ways to produce new b`) %>% 
+  dplyr::select(conjecture, `prior counts`, `ways to produce new b`) %>% 
   mutate(`new count` = paste0( `prior counts`, "x" ,`ways to produce new b`, " = ", `ways to produce new b` * `prior counts`))
 
 update_dta %>% 
@@ -250,7 +250,7 @@ prior_dta %>%
   mutate(p = seq(from = 0, to = 1, by = .25),
          `ways to produce data` = c(0, 3, 8, 9, 0)) %>% 
   mutate(plausibility           = `ways to produce data` / sum(`ways to produce data`)) %>%
-  select(conjecture, "p", `ways to produce data`, "plausibility") %>%
+  dplyr::select(conjecture, "p", `ways to produce data`, "plausibility") %>%
   knitr::kable()
 ```
 
@@ -1813,7 +1813,7 @@ point_estimates <-
     posterior_samples2 %>% median_qi(parameter_grid),
     posterior_samples2 %>% mode_qi(parameter_grid)
   ) %>% 
-  select(parameter_grid, .point) %>% 
+  dplyr::select(parameter_grid, .point) %>% 
   # these last two columns will help us annotate  
   mutate(x = parameter_grid + c(-.01, .01, -.01),
          y = c(.001, .0025, .003))
@@ -2455,7 +2455,7 @@ Finally, we find the *maximum a posteriori* of the posterior distribution.
 posterior_dta %>%
   arrange(desc(posterior))  %>%
   slice(1) %>%
-  select(parameter_grid, posterior) %>%
+  dplyr::select(parameter_grid, posterior) %>%
   mutate(posterior = format(posterior, scientific = FALSE))
 ```
 
@@ -2484,7 +2484,7 @@ posterior_samples %>%
 ```{r}
 posterior_samples %>%
   mode_hdi(parameter_grid, .width = c(0.5, 0.89, 0.97)) %>%
-  select(.lower, .upper, .width)
+  dplyr::select(.lower, .upper, .width)
 ```
 
 **3H3.** *Use rbinom to simulate 10,000 replicates of 200 births. You should end up with 10,000 numbers, each one a count of boys out of 200 births. Compare the distribution of predicted numbers of boys to the actual count in the data (111 boys out of 200 births). There are many good ways to visualize the simulations, but the dens command (part of the rethinking package) is probably the easiest way in this case. Does it look like the model fits the data well? That is, does the distribution of predictions include the actual observation as a central, likely outcome?*
@@ -3171,7 +3171,7 @@ post_samples %>%
 
 ```{r}
 post_samples %>%
-  select(sigma, mu) %>%
+  dplyr::select(sigma, mu) %>%
   pivot_longer(cols = c(sigma, mu), names_to = "parameter", values_to = "values") %>%
   ggplot(aes(x = values)) + 
   geom_density(fill = "grey33", size = 0) +
@@ -3183,7 +3183,7 @@ post_samples %>%
 
 ```{r}
 post_samples %>%
-  select(sigma, mu) %>%
+  dplyr::select(sigma, mu) %>%
   pivot_longer(cols = c(sigma, mu), names_to = "parameter", values_to = "values") %>%
   group_by(parameter) %>%
   tidybayes::mode_hdi() %>%
@@ -3907,17 +3907,146 @@ hdpi_dta <- predicted_mu %>%
   paged_table()
 ```
 
+
+Now that we have computed the high density percentile intervals for the posterior predicted $\mu_i$, we can once again plot the regression mean line, not with 0.89 plausability intervals.
+
 ```{r}
 d2 %>%
   ggplot(aes(x = weight, y = height)) +
   geom_smooth(data = hdpi_dta,
               aes(y = predicted_mean_height, ymin = .lower, ymax = .upper),
               stat = "identity",
-              fill = "grey70", color = "black", alpha = 1, size = 1/2) +
-  geom_point(color = "navyblue", shape = 1, alpha = 2/3) +
+              fill = "grey70", color = "black", alpha = 1, size = 1) +
+  geom_point(color = "navyblue", shape = 1, alpha = 2/3, size = 2) +
   coord_cartesian(xlim = range(d2$weight)) +
   theme_minimal()
 
+```
+
+
+Notice that when we computed the plausability interval for each x we get almost the same uncertainty as when we plotted all the regression lines in the posterior distribution.
+
+```{r}
+prep_plot(350)
+```
+
+
+While the above mentioned plausibility intervals give us very low uncertainty for estimates close to the average regression line, these inferences are conditional on our model that weight and height are associated in a linear fashion. How do we interpret all of the above, correctly?
+
+**Conditional on the assumption that height and weight are related by a straight line, then this is the most plausible line, and these are its plausible bounds**
+
+#### Prediction intervals
+
+Let's recall our model of height - ignoring the priors for simplicity.
+
+$$
+h_i \sim \text{Normal}(\mu_i, \sigma) \\
+\mu_i = \alpha + \beta (x_i - \bar{x})
+$$
+
+Up to here, we have predicted the values of $\mu_i$ and bounded them around 0.89 probability density intervals. That is, this bit.
+
+$$
+\mu_i = \alpha + \beta (x_i - \bar{x})
+$$
+
+We haven't actually measured the uncertainty around the predicted heights since we haven't yet measured the uncertainty for the spread of heights, that is the standard deviation of the Gaussian likelihood function/sampling distribution which we model as generating the data, $\sigma$. 
+
+$$
+h_i \sim \text{Normal}(\mu_i, \sigma) 
+$$
+
+Once we estimate both, can actually estimate the predicted heights as well as their uncertainty bounds. 
+
+**How do we do it?**
+
+  - For any unique weight value, we sample from Gaussian likelihood function/sampling distribution which we model as generating the data using the posterior predicted $\mu_i$ and $\sigma$, for that weight, both sampled from the posterior;
+  - If we do this for every sample from the posterior, and for every weight value of interest, **we end up with a collection of simulated heights that embodies the uncertainty**:
+    - **in the posterior distribution (uncertainty about parameter values), as well as**
+    - **in the Gaussian distribution of heights (uncertainty about sampled values)**
+
+There are two short-cuts for doing this. ``rethinking::sim()`` and ``brms::predict()``. However, for the reasons mentioned above, I will write my own version drawing on some code in the book plus some twicks. Basically, we repeat what we did before for obtaining posterior predictions for $\mu$ given data and the sampled $\alpha \text{ and } \beta$. Next, we use the predicted $\mu$ and the posterior sampled $\sigma$ and we draw 1000 observations from the Gaussian distribution which our model assumes to be the data generating process for the heights.
+
+
+```{r}
+## Step 1 - sample 10,  000 combinations of parameters from the posterior
+set.seed(123)
+post_samples <- MASS::mvrnorm(n = 1e4, mu = coef(m4.3), Sigma = vcov(m4.3)) %>%
+  as_tibble()
+post_samples
+## step 2 - create the grid of relevant weight values
+weight_sim <- seq(from = 25, to = 70, by = 1)
+### step 3, for each observation, estimate \mu_i for all posterior samples \alpha and \beta
+xbar <- mean(d2$weight)
+## now using purrr, for speed
+predicted_height <- tibble()
+## for each x, and for each alpha and beta, compute the mean height 
+predicted_height <- map_df(weight_sim, function(x_i){
+  ## estimate the predicted mean given data, use the posterior predicted mean and sigma to samples observations from the likelihood function/sampling distributions, a gaussian 
+  current_pred <- post_samples %>% 
+    mutate(predicted_mean_height = alpha + beta * (x_i - xbar),
+           predicted_height = rnorm(
+             n = nrow(.),
+             mean = predicted_mean_height,
+             sd = sigma
+            ),
+      weight = x_i,
+      iter = 1:n()) 
+  
+  return(current_pred)
+  
+})
+
+predicted_height %>%
+  dplyr::select(weight, predicted_mean_height, predicted_height, everything()) %>%
+  paged_table() 
+```
+
+As before, we estimate highest density intervals so as to estimate the uncertainty around our predicted heights but for both the mean heights as well as the actual predicted heights. 
+
+
+```{r}
+hdi_height <- predicted_height %>%
+  group_by(weight) %>%
+  tidybayes::mean_hdi(predicted_height, .width = 0.89) 
+
+hdi_height %>%
+  paged_table()
+
+hdi_mu <- predicted_height %>%
+  group_by(weight) %>%
+  tidybayes::mean_hdi(predicted_mean_height, .width = 0.89) %>%
+  paged_table()
+
+hdi_mu %>%
+  paged_table()
+
+```
+
+Next, we can use these intervals as well as our predicted values to plot the predicted mean height along with its 0.98 credible interval (purple) as well as the predicted height along with its 0.98 credible interval (blue). 
+
+Interpreting our inferences:
+
+  - The blue 0.89 credible interval bounds, represent the
+**area within which the model expects to find 89% of actual heights in the population, at each weight** $\to$ **sampling uncertainty**;
+  - The regression line as well as the 0.89 interval bounds (purple), represent **the most plausible predicted mean heights along with its bounds, at each weight**
+
+```{r}
+d2 %>%
+  ggplot(aes(x = weight)) +
+  geom_ribbon(data = hdi_height, 
+              aes(ymin = .lower, ymax = .upper),
+              fill = "paleturquoise2") +
+  geom_smooth(data = hdi_mu,
+              aes(y = predicted_mean_height, ymin = .lower, ymax = .upper),
+              stat = "identity",
+              fill = "slateblue", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height),
+             color = "navyblue", shape = 1, size = 2, alpha = 2/3) +
+  ylab("height") +
+  coord_cartesian(xlim = range(d2$weight),
+                  ylim = range(d2$height)) +
+  theme_minimal()
 ```
 
 
