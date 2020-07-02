@@ -4,7 +4,7 @@ author: 'José Maria Reis'
 date: "last update: `r format(Sys.Date(), format = '%d %B %Y')`" 
 output:
   html_document:
-    keep_md: yes
+    keep_md: no
     number_sections: yes
     theme: readable
     highlight: kate
@@ -3291,7 +3291,8 @@ b4.2 <-brm(data = d2,
            warmup = 30000, 
            chains = 4, 
            cores = 4,
-           seed = 4) # non verbose
+           seed = 4,
+           refresh = 0) # non verbose
 ```
 
 ```{r}
@@ -3366,6 +3367,7 @@ diag(vcov(m4.1))
 precis(m4.1)
 sqrt(diag(vcov(m4.1)))
 ```
+
 
 This matrix below shows us the **correlation matrix**, again, covariance does not take into account varying magnitudes and so we resort to dividing it by standard deviations for going around it. 
 
@@ -3458,7 +3460,13 @@ $$
 \overbrace{\sigma \sim \text{Uniform(0,50)}}^{\text{prior for } \sigma}
 $$
 
-Now we need to add our predictor variable, *weight*. Let $x$ be the name for the column with the weight measurements. Let the average value of $x$ be $\bar{x}$. We can now define it. We state what we mendioned before, that the mean of the outcome variable is predicted by our linear model. Next, we just have to assign priors to our unobserved parameters of the linear model. Case you are wondering why we wrote $\beta (x_i - \bar{x})$, instead of $\beta x_i$, the answer is that it is standardization trick - **centering** - no actually a part of a general approach to these models. We could've easily just gone with $\beta x_i$. More on centering, later! So we get...
+Now we need to add our predictor variable, *weight*. Let $x$ be the name for the column with the weight measurements. Let the average value of $x$ be $\bar{x}$. We can now define it. We state what we mendioned before, that the mean of the outcome variable is predicted by our linear model. Next, we just have to assign priors to our unobserved parameters of the linear model. Case you are wondering why we wrote $\beta (x_i - \bar{x})$, instead of $\beta x_i$, the answer is that it is standardization trick - **centering** - not actually a part of a general approach to these models. We could've easily just gone with $\beta x_i$. 
+
+
+**Centering** our main independent variable, by subtracting the value of the independent variable from its mean, $x - \bar{x}$, changes the values of the independent variable so that mean now has a value of 0. The scale of the values, however, stays the same. One unit is still one unit. This means that it does not impact our interpretations of the regression coefficients. Our interpretation of the intercept, however, changes. Since the mean of our predictor is now valued at 0, this implies that $\alpha$ can be interpreted as the expected height when x is equal to its average, $\mu_i = \alpha + \beta(\bar{x} - \bar{x}) = \alpha$
+
+
+So we get...
 
 $$
 \overbrace{h_i \sim \text{Normal}(\mu, \sigma)}^{\text{likelihood}}  \\
@@ -3979,7 +3987,6 @@ weight_sim <- seq(from = 25, to = 70, by = 1)
 ### step 3, for each observation, estimate \mu_i for all posterior samples \alpha and \beta
 xbar <- mean(d2$weight)
 ## now using purrr, for speed
-predicted_height <- tibble()
 ## for each x, and for each alpha and beta, compute the mean height 
 predicted_height <- map_df(weight_sim, function(x_i){
   ## estimate the predicted mean given data, use the posterior predicted mean and sigma to samples observations from the likelihood function/sampling distributions, a gaussian 
@@ -4001,6 +4008,7 @@ predicted_height %>%
   dplyr::select(weight, predicted_mean_height, predicted_height, everything()) %>%
   paged_table() 
 ```
+
 
 As before, we estimate highest density intervals so as to estimate the uncertainty around our predicted heights but for both the mean heights as well as the actual predicted heights. 
 
@@ -4050,6 +4058,1354 @@ d2 %>%
 ```
 
 
+### Curves from lines
+
+We tend to disassociate lines from curves. However, that is missleading. Linear functions are actually part of the *polynomial* functions family. Linear functions are first-degree polynomials. Polynomials of second or higher degrees are actually non-linear curves. More relevantly for our purposes, both function in a similar manner.
+
+In this subsection we will learn two of these models:
+
+  1. **Polynomial Regression**,
+  2. **Regression with B-Splines**
+
+Because these methods allow for curves, they may help improving our fit. However, this comes at the possible cost of overfitting our data (more on this in the next subsection). So it really depends on our research question.
+
+
+#### Polynomial Regression
+
+
+Say we are now interesting in modeling the relationship between weight and height but for all members of the !Kung tribe.
+
+```{r}
+data(Howell1)
+d <- Howell1
+```
+
+
+The relationship, now, between weight and height is now visibly curved with a steeper slope in the ages between 0-18.
+
+```{r}
+d %>%
+  mutate(age_discrete = cut(age, seq(0, 100, 18))) %>%
+  filter(!is.na(age_discrete)) %>%
+  ggplot(aes(x = weight, y = height, color = age_discrete)) + 
+  geom_point() +
+  theme_minimal()
+```
+
+
+Being so, we can see that our previous linear model will fit the data less well now that we have included children.
+
+
+```{r}
+
+### estimate the posterior distribution of our linear model via quadratic approximation
+my_model <- alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + beta * (weight - mean(weight)),
+  ## priors
+  alpha ~ dnorm(178, 20),
+  beta ~ dlnorm(0, 1),
+  sigma ~ dunif(0,50)
+)
+
+m4.3.2 <- quap(my_model,
+               data = d)
+
+### Generate predicted mean heights and predicted heights
+## Step 1 - sample 10,  000 combinations of parameters from the posterior
+set.seed(123)
+post_samples <- MASS::mvrnorm(n = 1e4, mu = coef(m4.3.2), Sigma = vcov(m4.3.2)) %>%
+  as_tibble()
+## step 2 - create the grid of relevant weight values
+weight_sim <- seq(from = 0, to = 70, by = 1)
+### step 3, for each observation, estimate \mu_i for all posterior samples \alpha and \beta
+xbar <- mean(d$weight)
+## now using purrr, for speed
+## for each x, and for each alpha and beta, compute the mean height 
+predicted_height <- map_df(weight_sim, function(x_i){
+  ## estimate the predicted mean given data, use the posterior predicted mean and sigma to samples observations from the likelihood function/sampling distributions, a gaussian 
+  current_pred <- post_samples %>% 
+    mutate(predicted_mean_height = alpha + beta * (x_i - xbar),
+           predicted_height = rnorm(
+             n = nrow(.),
+             mean = predicted_mean_height,
+             sd = sigma
+            ),
+      weight = x_i,
+      iter = 1:n()) 
+  
+  return(current_pred)
+  
+})
+
+### Compute 0.89 highest density intervals for the predicted mean heights and predicted heights
+hdi_height <- predicted_height %>%
+  group_by(weight) %>%
+  tidybayes::mean_hdi(predicted_height, .width = 0.89) 
+
+hdi_mu <- predicted_height %>%
+  group_by(weight) %>%
+  tidybayes::mean_hdi(predicted_mean_height, .width = 0.89) %>%
+  paged_table()
+
+### Plot predictions along with their uncertainty
+d %>% 
+  mutate(age_discrete = cut(age, seq(0, 100, 18))) %>%
+  filter(!is.na(age_discrete)) %>%
+  ggplot(aes(x = weight)) +
+  geom_ribbon(data = hdi_height, 
+              aes(ymin = .lower, ymax = .upper),
+              fill = "paleturquoise2") +
+  geom_smooth(data = hdi_mu,
+              aes(y = predicted_mean_height, ymin = .lower, ymax = .upper),
+              stat = "identity",
+              fill = "slateblue", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height, color = age_discrete), shape = 1, size = 2) +
+  ylab("height") +
+  coord_cartesian(xlim = range(d$weight),
+                  ylim = range(d$height)) +
+  theme_minimal()
+
+```
+
+
+While it does not model too badly the predicted heights (sampling uncertainty), it seems to model poorly the mean heights (parameter uncertainty). For example, for weights below 20 our model strongly overpredicts mean height; similarly, it underpredicts mean height for weights between 20 and 40. Unsurprisingly, these weight ranges cover the non-adult individuals. 
+
+
+While there are alternative, one of them we will discuss at length later on - multi-level modelling -, we could try **Polynomial Regressions** since they model non-linear curves.
+
+
+The most common **polynomial regression is a parabolic (second-degree polynomial) model of the mean**:
+
+$$
+\mu_i = \alpha + \beta_1x_i + \beta_2x_i^2
+$$
+
+The $\mu_i = \alpha + \beta_1x_i$ part is the same linear function of x in a linear regression, just with a little "1" subscript added to the parameter name, so we can tell it apart from the new parameter. The additional term uses the square of $x_i$ to construct a parabola, rather than a perfectly straight line. The new parameter $\beta_2$ measures the curvature of the relationship.
+
+Overall, the default rule should be **standardizing** our variables, that is, turn them into standard/z-scores. Before we **centered** our main independent variable, $x - \bar{x}$, so as to allow $\alpha$ to be the expected height when x is equal to its average, $\mu_i = \alpha + \beta(\bar{x} - \bar{x}) = \alpha$. For standardizing, we just have to divide the centered variable by its standard deviation, $z = \frac{x_i - \bar{x}}{\sigma}$. This results into changing both **the values as well as the scale** of our data, with each observation **now representing standard deviations from the mean**. E.g. $weight_z = 0.9$ is interpreted as *weight 0.9 standard deviations from the mean*.
+
+Why standardize?
+
+  1. Easier to interpret the coefficients since now all variables are on the same scale;
+  2. Efficiency/computation reasons, apparently R may give some mistaken estimates and standardization seems to help...**??**
+  3. Models containing **interaction terms or polynomials** are prone to **multicolinearity** and standardizing our variables curbes this (more on this in the next subsection)
+  4. We can always *de*-standardize! $x = z \times \sigma + \bar{x}$
+  
+```{r}
+xbar <- mean(d$weight)
+sd_x <- sd(d$weight)
+d %>%
+  dplyr::select(weight) %>%
+  mutate(weight_standardized = (weight - xbar)/sd_x,
+         weight_de_standardized = weight_standardized * sd_x + xbar) %>%
+  paged_table()
+```
+
+The remaining components of our model, the likelihood function/sampling distribution and the priors stay the same - with the exception of adding a prior to the second beta.
+
+
+$$
+h_i \sim \text{Normal}(\mu_i, \sigma) \\
+\mu_i = \alpha + \beta_1 \text{weight_s}_i + \beta_2\text{weight_s}_i^2,\\\text{   where } \text{weight_s} = \frac{x_i - \bar{x}}{\sigma}    \\
+\alpha \sim \text{Normal}(178, 20) \\
+\beta_1 \sim \text{Log-Normal}(0, 1) \\
+\beta_2 \sim \text{Normal}(0,1) \\
+\sigma \sim \text{Uniform}(0, 50)
+$$
+
+We start by standardizing our weight variable and generating the squarred standardized weight variable.
+
+```{r}
+d <- d %>%
+  mutate(weight_s = (weight - mean(weight))/sd(weight),
+         weight_s2 = weight_s^2)
+d %>%
+  paged_table()
+```
+
+
+We can now estimate the quadratic approximate posterior distribution using `quap()`.
+
+
+```{r}
+m4.5 <- quap(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- alpha + beta_1 * weight_s + beta_2 * weight_s2,
+    alpha ~ dnorm(178, 20),
+    beta_1 ~ dlnorm(0,1),
+    beta_2 ~ dnorm(0,1),
+    sigma ~ dunif(0, 50)
+  ),
+  data = d
+)
+
+summary(m4.5)
+```
+
+The parameter $\alpha$ is still the intercept, so it tells us the expected value of height when weight is at its mean value. But it is no longer equal to the mean height in the sample, since there is no guarantee it should in a polynomial regression. Interpreting the beta coefficients is trickier since we are talking about the linear and cubic parts of a curve. Plotting posterior predictions will help.
+
+```{r}
+
+### Generate predicted mean heights and predicted heights
+## Step 1 - sample 1000 combinations of parameters from the posterior
+set.seed(123)
+post_samples <- MASS::mvrnorm(n = 1e3, mu = coef(m4.5), Sigma = vcov(m4.5)) %>%
+  as_tibble()
+post_samples
+## step 2 - create the grid of relevant weight values
+weight_sim <- seq(from=-2.2, to=2, length.out=30)
+weight_sim2 <- weight_sim^2
+### step 3, for each observation, estimate \mu_i and predicted height for all posterior samples \alpha and \beta
+## now using purrr, for speedt 
+predicted_height <- map2_df(weight_sim, weight_sim2, function(x_i, x_i2){
+  ## estimate the predicted mean given data, use the posterior predicted mean and sigma to samples observations from the likelihood function/sampling distributions, a gaussian 
+  current_pred <- post_samples %>% 
+    mutate(predicted_mean_height = alpha + beta_1 * x_i + beta_2 * x_i2,
+           predicted_height = rnorm(
+             n = nrow(.),
+             mean = predicted_mean_height,
+             sd = sigma
+            ),
+      weight_s = x_i,
+      weight_s2 = x_i2,
+      iter = 1:n()) 
+  
+  return(current_pred)
+  
+})
+
+predicted_height %>%
+  paged_table()
+
+### Compute 0.89 highest density intervals for the predicted mean heights and predicted heights
+(hdi_height <- predicted_height %>%
+  group_by(weight_s) %>%
+  tidybayes::mean_hdi(predicted_height, .width = 0.89))
+
+(hdi_mu <- predicted_height %>%
+  group_by(weight_s) %>%
+  tidybayes::mean_hdi(predicted_mean_height, .width = 0.89) %>%
+  paged_table())
+
+### Plot predictions along with their uncertainty
+d %>%
+  ggplot(aes(x = weight_s)) +
+  geom_ribbon(data = hdi_height, 
+              aes(ymin = .lower, ymax = .upper),
+              fill = "paleturquoise2") +
+  geom_smooth(data = hdi_mu,
+              aes(y = predicted_mean_height, ymin = .lower, ymax = .upper),
+              stat = "identity",
+              fill = "slateblue", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height), color = "navyblue", shape = 1, size = 2) +
+  ylab("height") +
+  coord_cartesian(xlim = range(d$weight_s),
+                  ylim = range(d$height)) +
+  theme_minimal()
+```
+
+Our new curve seems to fit the data well, with the mean regression line following the patterns in the data well and with most of the uncertainty about the sampling distribution being within our .89 highest density interval. 
+
+We could go on and fit a higher-order polynomial regression, **a cubic regression on weight**
+
+$$
+h_i \sim \text{Normal}(\mu_i, \sigma) \\
+\mu_i = \alpha + \beta_1 \text{weight_s}_i + \beta_2\text{weight_s}_i^2 + \beta_3\text{weight_s}_i^3 \\
+\alpha \sim \text{Normal}(178, 20) \\
+\beta_1 \sim \text{Log-Normal}(0, 1) \\
+\beta_2 \sim \text{Normal}(0,1) \\
+\beta_3 \sim \text{Normal}(0,1) \\
+\sigma \sim \text{Uniform}(0, 50)
+$$
+
+
+```{r}
+d <- d %>%
+  mutate(weight_s3 = weight_s^3)
+
+m4.6 <- quap(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- alpha + beta_1 * weight_s + beta_2 * weight_s2 + beta_3 * weight_s3,
+    alpha ~ dnorm(178, 20),
+    beta_1 ~ dlnorm(0,1),
+    beta_2 ~ dnorm(0,1),
+    beta_3 ~ dnorm(0,1),
+    sigma ~ dunif(0, 50)
+  ),
+  data = d
+)
+
+summary(m4.6)
+```
+
+
+```{r}
+### Generate predicted mean heights and predicted heights
+## Step 1 - sample 1000 combinations of parameters from the posterior
+set.seed(123)
+post_samples <- MASS::mvrnorm(n = 1e3, mu = coef(m4.6), Sigma = vcov(m4.6)) %>%
+  as_tibble()
+post_samples
+## step 2 - create the grid of relevant weight values
+  weight_sim <- seq(from=-2.2, to=2, length.out=30)
+weight_sim2 <- weight_sim^2
+weight_sim3 <- weight_sim^3
+### step 3, for each observation, estimate \mu_i and predicted height for all posterior samples \alpha and \beta
+## now using purrr, for speedt 
+predicted_height <- pmap_df(list(weight_sim, weight_sim2, weight_sim3), function(x_i, x_i2, x_i3){
+  ## estimate the predicted mean given data, use the posterior predicted mean and sigma to samples observations from the likelihood function/sampling distributions, a gaussian 
+  current_pred <- post_samples %>% 
+    mutate(predicted_mean_height = alpha + beta_1 * x_i + beta_2 * x_i2 + beta_3 * x_i3,
+           predicted_height = rnorm(
+             n = nrow(.),
+             mean = predicted_mean_height,
+             sd = sigma
+            ),
+      weight_s = x_i,
+      weight_s2 = x_i2,
+      weight_s3 = x_i3,
+      iter = 1:n()) 
+  
+  return(current_pred)
+  
+})
+
+predicted_height %>%
+  paged_table()
+
+### Compute 0.89 highest density intervals for the predicted mean heights and predicted heights
+(hdi_height <- predicted_height %>%
+  group_by(weight_s) %>%
+  tidybayes::mean_hdi(predicted_height, .width = 0.89))
+
+(hdi_mu <- predicted_height %>%
+  group_by(weight_s) %>%
+  tidybayes::mean_hdi(predicted_mean_height, .width = 0.89) %>%
+  paged_table())
+
+### Plot predictions along with their uncertainty
+d %>%
+  ggplot(aes(x = weight_s)) +
+  geom_ribbon(data = hdi_height, 
+              aes(ymin = .lower, ymax = .upper),
+              fill = "paleturquoise2") +
+  geom_smooth(data = hdi_mu,
+              aes(y = predicted_mean_height, ymin = .lower, ymax = .upper),
+              stat = "identity",
+              fill = "slateblue", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height), color = "navyblue", shape = 1, size = 2) +
+  ylab("height") +
+  coord_cartesian(xlim = range(d$weight_s),
+                  ylim = range(d$height)) +
+  theme_minimal()
+```
+
+The fit seems event better. Let's plot it again but now converting the x ticks into the natural scale. 
+
+```{r}
+d %>%
+  ggplot(aes(x = weight_s)) +
+  geom_ribbon(data = hdi_height, 
+              aes(ymin = .lower, ymax = .upper),
+              fill = "paleturquoise2") +
+  geom_smooth(data = hdi_mu,
+              aes(y = predicted_mean_height, ymin = .lower, ymax = .upper),
+              stat = "identity",
+              fill = "slateblue", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height), color = "navyblue", shape = 1, size = 2) +
+  ylab("height") +
+  coord_cartesian(xlim = range(d$weight_s),
+                  ylim = range(d$height)) +
+   scale_x_continuous("standardized weight converted back",
+                     breaks = seq(from=-2.2, to=2, length.out=30),
+                     labels = round(seq(from=-2.2, to=2, length.out=30)*sd(d$weight) + mean(d$weight), 0.2)) +
+  theme_minimal()
+```
+
+While these models are fitting the data very well, there are some issues with them:
+
+  1. The polynomials, in this case, encode no theoretical information and so we actually do not learn anything from this;
+  2. The model with the best fit is not necessarily the best model, it might actually just be **overfitting** (more on this later on)
+
+But just to get the intuition and to understand the particular risk of overfitting in polynomial regression, let's rebuild the plot where we fit several sampled cubic polynomial curves from the posterior distribution. 
+
+```{r}
+my_model <- alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + beta_1 * weight_s + beta_2 * weight_s2 + beta_3 * weight_s3,
+  alpha ~ dnorm(178, 20),
+  beta_1 ~ dlnorm(0,1),
+  beta_2 ~ dnorm(0,1),
+  beta_3 ~ dnorm(0,1),
+  sigma ~ dunif(0, 50)
+)
+
+prep_plot <- function(n, data = d, descending = TRUE, seed = 3){
+  
+  if (descending) {
+    
+    ## subset the data
+    subset <- data %>%
+      arrange(desc(age)) %>%
+      slice(1:n)
+    
+  } else {
+    
+    ## subset the data
+    subset <- data %>%
+      slice(1:n)
+    
+  }
+  
+  ## estimate the psoterior via quadratic approx
+  post <- quap(my_model, data = subset)
+  ## extract 40 posterior samples, where each sample is contains a alpha, beta, and a sigma -> i.e. a regression line
+  set.seed(seed)
+  sampled <- MASS::mvrnorm(n = 1000, mu = coef(post), Sigma = vcov(post)) %>%
+    as_tibble() 
+  ## plot
+  # display raw data and sample size
+  plot(subset$weight_s, subset$height,
+       xlim=range(data$weight_s), ylim=range(data$height),
+       col=rangi2 , xlab="weight" , ylab="height" )
+  mtext(concat("N = ",n))
+  # plot the lines, with transparency
+  for (i in 1:40){
+    curve(sampled$alpha[i] + sampled$beta_1[i]* x + sampled$beta_2[i] * x^2 + sampled$beta_3[i] * x^3,
+          col=col.alpha("black",0.3) , add=TRUE )  
+  }
+  
+}
+
+```
+
+
+To mimic an instance of overfitting say we fitted the cubic model above. Because it fitted the data well, we decided to use it as a prediction tool for predicting the heights of the !Kung. So we sample more data. Say we get the following 10 observations which are all, overall, relatively high weight. Because we are working with curves, we should expected them to fan out in a stronger fashion in areas with relatively low data, leading to impossible values. Below we have an example, our model predicts heights starting starting at 1,10 meters up to 1,60 meters for individuals with 6 Kgs!
+
+
+```{r}
+prep_plot(10, descending = FALSE, seed = 27)
+```
+
+This problem is also curbed with sample size, still we should not ignore this issue and think of alternative models which avoid this issue. **Unless theoretically justified, stay avoid these models** (this obviously applies to any model).
+
+```{r}
+prep_plot(352, descending = FALSE, seed = 27)
+```
+
+#### Splines
+
+A bit too vague, check Wood, 2017 later on **TO-DO**
+
+
+##### Practice
+
+**4E1.** *In the model definition below, which line is the likelihood?*
+
+
+The line $y_i \sim \text{Normal}(\mu, \sigma)$ is a description of the data generating process. Given the fixed parameters $\mu$ and $\sigma$ it tells us the probability of observing $y_i$. Hence it is the likelihood function. 
+
+**4E2.** *In the model definition just above, how many parameters are in the posterior distribution?*
+
+The following: $\mu, \sigma$.
+
+**4E3.** *Using the model definition above, write down the appropriate form of Bayes’ theorem that includes the proper likelihood and priors.*
+
+$$
+Pr(\mu, \sigma|Y) = \frac{\prod \text{Normal}(y_i|\mu , \sigma)\text{Normal}(\mu|0,10)\text{Exp}(\sigma|1)}{\int \int\text{Normal}(y_i|\mu , \sigma)\text{Normal}(\mu|0,10)\text{Exp}(\sigma|1) d\mu d\sigma}
+$$
+
+**4E4.** *In the model definition below, which line is the linear model?*
+
+It is easy to figure it out since we have a linear function which, given change in the predictor variable $x_i$, produces the *expected value* of $y_i$ which is assumed to be drawn from a Gaussian.
+
+Answer: $\mu_i = \alpha + \beta x_i$
+
+**4E5**. *In the model definition just above, how many parameters are in the posterior distribution?*
+
+Answer: $\alpha, \beta, \sigma$. Not $\mu_i$ since it is not estimated from the posterior distribution, but rather deterministically predicted based on posterior distribution estimations as well as the data.
+
+**4M1.** *For the model definition below, simulate observed y values from the prior (not the posterior).*
+
+
+Steps: 
+  1. Randomly sample each parameter from our prior distributions;
+  2. Generate simulations by plugging the sampled parameters into the likelihood function
+
+```{r, warning=FALSE}
+fake_data <- tibble(mu = rnorm(1e4, mean = 0, sd = 10),
+                    sigma = rexp(1e4, rate = 1)) %>%
+  mutate(prior_y = rnorm(1e4, mean = mu, sd = sigma))
+
+fake_data %>%
+  ggplot(aes(prior_y)) + 
+  geom_density() +
+  theme_minimal()
+```
+
+**4M2.** *Translate the model just above into a quap formula.*
+
+
+```{r eval=FALSE, include=TRUE}
+fit1 <- quap(
+  alist(
+    y ~ dnorm(mu, sigma),
+    mu ~ dnorm(0, 10),
+    sigma ~ dexp(1)
+  )
+)
+```
+
+
+**4M3.** *Translate the quap model formula below into a mathematical model definition.*
+
+
+```{r eval=FALSE, include=TRUE}
+flist <- alist(
+y ~ dnorm( mu , sigma ),
+mu <- a + b*x,
+a ~ dnorm( 0 , 10 ),
+b ~ dunif( 0 , 1 ),
+sigma ~ dexp( 1 )
+)
+```
+
+
+
+$$
+y_i \sim \text{Normal}(\mu, \sigma)\\
+\mu_i = \alpha + \beta x_i\\
+\alpha \sim \text{Normal}(0, 10)\\
+\beta \sim \text{Uniform}(0, 1)\\
+\sigma \sim \text{Exp}(1)
+
+$$
+
+**4M4.** *A sample of students is measured for height each year for 3 years. After the third year, you want to fit a linear regression predicting height using year as a predictor. Write down the mathematical model definition for this regression, using any variable names and priors you choose. Be prepared to defend your choice of p*
+
+A couple of assumptions given the lack of information. These these theoretical assumptions *only* matter for justifying the priors, so for different countries follow the same research process. 
+
+*Assumption 1: U.S.*
+Because of the nationality of the author, I am going to assume that the students are from the *U.S.*. 
+
+*Assumption 2: students ages [6, 24]*
+Humans generaly stop growing by the end of their puberty. Prior research suggests that puberty tends to end for women at around 14,16 years; and at around 17,18 for Men. Schooling in the US seems to start at age 6 and end at around age 18. Students can also be university students, so we should extend our ages to early adulthood.
+
+
+Time is expected to have an additive effect on height given the ages assumed.
+
+
+**Defining the likelihood**
+
+Each sampled height is expected to fluctuate around the expected value of height. As the sample size increases, we will have more terms in our additive process, and an increase in the probability that negative and positive fluctuations (or sums of fluctuations) cancel each other out. Thus leading to a bell-shapped distribution with light tails - i.e. most observations being within the 95% PI. 
+
+Hence, we assume that the individual heights in our sample are drawn from a Gaussian with (unknown) mean mu and standard deviation sigma.
+
+
+$$
+height_i \sim \text{Normal}(\mu, \sigma)
+$$
+
+
+**Defining the Linear model**
+
+However, $\mu, \sigma$ are unknown, and we want to learn them. Given the theoretically expected additive relationship between time and height, we could learn $\mu$ by estimating a linear model.
+
+
+That is, we are assuming that the expected value of $Y$ for individual $i$ is estimated by the following equation. We center the year on 1 so as to allow the alpha to be interpreted as the mean height. Usually, we would leave this for R to do (reference category in discrete variables).
+
+
+$$
+\mu_i = \alpha + \beta_1 (year_i - 1)
+$$
+
+
+More relevantly, we have three parameters which we have to estimate. The priors are informative and based on diferential [yearly growth rates across age](https://www.cdc.gov/growthcharts/clinical_charts.htm) and probability of a student being sampled using a survey from [2019 (envelope calculations)](https://nces.ed.gov/programs/digest/d18/tables/dt18_105.30.asp). In 2019, there were 56.6 Million students enrolled in schools or universities. Of these, roughly 39.8 are pre-k to 8th grade (0.51), 16.8 are 9-12th grade (0.23), and the remaining are post-secundary education students (0.26).
+
+$\alpha$, the mean height at the start of the study, is assumed to be drawn from a normal distribution with a mean of 140 and a standard deviation of 15. 140 is a compromise mean value based on the average age of 6 year olds (roughly 106 cm) and the average age of 16 year olds (roughly 150 cm), the standard deviation allows for enough variation so as to include within 2 standard deviatins $100 \pm 170$. The focus on such early ages is based on their likelihood of being sampled.
+
+$\beta$ here stands for the rate of change in the expected height of $i$ given an increase of $year_i$ by one. Also focusing on the rates of change for the ages mentioned above, beta is drawn from a normal distribution with a mean of 4 cm with a standard deviation of 2. This allows for enough variance so that $0 \pm 8$ cover 95% of rates of change. The fact that 0 is within this interval is crucial given the possibility of post-puberty students being sampled.
+
+$\sigma$ takes a convservative random uniform distribution bounded between 0 and 20. A more conservative one, such as allowing a range up to 50, would've lead to fairly unlikely heights being plausible.
+
+
+$$
+\beta \sim \text{Normal}(4,2)\\
+\alpha \sim \text{Normal}(140, 15)\\
+\sigma \sim \text{Uniform}(0, 20)
+$$
+
+
+Simulations, as before, we run estimate the prior predictive distribution for our priors. The predicted mean heights seem fairly reasonable, the predicted heights, however, seem to be too heavy-tailed.
+
+```{r}
+
+set.seed(12435)
+sims <- tibble(alpha = rnorm(1e4, 140, 15),
+               beta = rnorm(1e4, 4, 2),
+               sigma = runif(1e4, 0, 20),
+               year = sample(1:3, size = 1e4, replace = TRUE)) %>%
+  mutate(mu = alpha + beta * (year - 1),
+         heights = rnorm(1e4, mu, sigma))
+
+summary(sims)
+
+ sims %>%
+   pivot_longer(cols = c(mu, heights), names_to = "prediction", values_to = "cm") %>% 
+   ggplot(aes(cm, fill = prediction)) + 
+   geom_density(alpha = 0.7) +
+   scale_x_continuous(breaks = seq(53, 220, by = 20)) +
+   theme_minimal()
+ 
+```
+
+**4M5.** *Now suppose I remind you that every student got taller each year. Does this information lead you to change your choice of priors? How?*
+
+This new information implies that $\beta$ must always be positive. We can achieve this but drawing our priors for beta from $Log-Normal(0, 0.7)$.  Because the values in a lognormal distribution are positive, they create a right skewed curve, which is good for our purposes since we want to assign more probability density to relatively lower heights (again, younger children 6-15 have a relatively larger probability of being sampled).
+
+
+```{r}
+set.seed(12435)
+sims2 <- tibble(alpha = rnorm(1e4, 140, 15),
+               beta = rlnorm(1e4, 0, 0.7),
+               sigma = runif(1e4, 0, 20),
+               year = sample(1:3, size = 1e4, replace = TRUE)) %>%
+  mutate(mu = alpha + beta * (year - 1),
+         heights = rnorm(1e4, mu, sigma))
+
+summary(sims2)
+
+plot(density(sims2$beta))
+
+ sims2 %>%
+   pivot_longer(cols = c(mu, heights), names_to = "prediction", values_to = "cm") %>% 
+   ggplot(aes(cm, fill = prediction)) + 
+   geom_density(alpha = 0.7) +
+   theme_minimal() +
+   scale_x_continuous(breaks = seq(70, 220, by = 20))
+```
+
+
+**M6.** *Now suppose I tell you that the variance among heights for students of the same age is never more than 64cm. How does this lead you to revise your priors?*
+
+
+With a variance equal to 64, $\sigma = \sqrt{Var(x)} = \sqrt{64} = 8$ and so we restrict the bounds of sigma to values up to 8.
+
+
+```{r}
+set.seed(12435)
+sims3 <- tibble(alpha = rnorm(1e4, 140, 15),
+               beta = rlnorm(1e4, 0, 0.7),
+               sigma = runif(1e4, 0, 8),
+               year = sample(1:3, size = 1e4, replace = TRUE)) %>%
+  mutate(mu = alpha + beta * (year - 1),
+         heights = rnorm(1e4, mu, sigma))
+
+summary(sims3)
+
+ sims3 %>%
+   pivot_longer(cols = c(mu, heights), names_to = "prediction", values_to = "cm") %>% 
+   ggplot(aes(cm, fill = prediction)) + 
+   geom_density(alpha = 0.7) +
+   theme_minimal() +
+   scale_x_continuous(breaks = seq(70, 220, by = 20))
+```
+
+
+**4H1**. *The weights listed below were recorded in the !Kung census, but heights were not recorded for these individuals. Provide predicted heights and 89% intervals for each of these individuals. That is, fill in the table below, using model-based predictions*
+
+Load the data and estimate the posterior distribution from the cubic model.
+
+```{r}
+data(Howell1)
+d <- Howell1
+rm(Howell1)
+## standardize
+xbar <- mean(d$weight) 
+xsd <- sd(d$weight)
+d <- d %>%
+  mutate(weight_s = weight - xbar/xsd,
+         weight_s2 = weight_s^2,
+         weight_s3 = weight_s^3)
+
+mh1 <- quap(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- alpha + beta_1 * weight_s + beta_2 * weight_s2 + beta_3 * weight_s3,
+    alpha ~ dnorm(178, 20),
+    beta_1 ~ dlnorm(0,1),
+    beta_2 ~ dnorm(0,1),
+    beta_3 ~ dnorm(0,1),
+    sigma ~ dunif(0, 50)
+  ),
+  data = d
+)
+
+
+```
+
+
+Now, for each observation, we have a distribution of different curves containing predicted expected heights for all weight values. We could just take the mean curve and run with it (point-estimate), but by doing so we would loose previous information about the uncertainty of our estimates. Hence, we sample from the posterior distribution and create a posterior predictive distribution.
+
+```{r}
+set.seed(1234)
+sample_size <- 1e4
+## draw estimated parameters from the posterior which is a multivariate gaussian distribution
+post_samples <- MASS::mvrnorm(n = sample_size, mu = coef(mh1), Sigma = vcov(mh1)) %>%
+  as_tibble()
+
+head(post_samples)
+```
+
+For each weight value and combination of parametes, we compute the predicted mean height. Using the predicted values of mu and estimated sigma we predict the heights by drawing them from the Normal distribution which is assumed to generate the data, according to our Gaussian model.
+
+```{r}
+## target weights
+target_weights <- c(46.95, 43.72, 64.78, 32.59, 54.63)
+
+## predicted scores
+set.seed(1234)
+predictions <- map_df(target_weights, function(weight){
+  
+  ## standardize
+  weight_s <- weight - xbar/xsd # see above
+  ## quadratic term
+  weight_s2 <- weight_s^2
+  ## cubic term
+  weight_s3 <- weight_s^3
+  
+  ## predictions
+  pred <- post_samples %>%
+    mutate(predicted_mu = alpha + beta_1 * weight_s + beta_2 * weight_s2 + beta_3 * weight_s3,
+           predicted_height = rnorm(
+             n = nrow(.), 
+             mean = predicted_mu,
+             sd = sigma
+             ),
+           iter = 1:nrow(.))
+  
+  ## finally, we compute the 0.89 quantile highest density intervals
+  out <- pred %>%
+    tidybayes::mean_hdi(predicted_mu, .width = 0.89) %>%
+    mutate(weight = weight)
+  
+  return(out)
+})
+predictions %>%
+  dplyr::select(weight, expected_height = predicted_mu, lower_bound = .lower, upper_bound = .upper) %>%
+  paged_table()
+```
+
+We can also plot the expected height along with the uncertainty bounds as error bars.
+
+```{r}
+predictions %>%
+  dplyr::select(weight, expected_height = predicted_mu, lower_bound = .lower, upper_bound = .upper) %>%
+  ggplot(aes(x = weight, y = expected_height)) + 
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin=lower_bound, ymax=upper_bound), width=.5,
+                 position=position_dodge(.9))  + 
+  scale_x_continuous(breaks = seq(30, 65, by = 2)) +
+  scale_y_continuous(breaks = seq(135, 185, by = 5)) +
+  theme_minimal()
+```
+
+
+The larger uncertainty for 64.78 is reasonable given that we have very little data on weights higher than 60. Being so, the curves are expected to fan out in this region.
+
+```{r}
+d$weight[d$weight > 60]
+```
+
+
+**4H2**. *Select out all the rows in the Howell1 data with ages below 18 years of age. If you do it right, you should end up with a new data frame with 192 rows in it.*
+
+```{r}
+rm(d)
+data(Howell1)
+d <- Howell1[Howell1$age < 18, ]
+rm(Howell1)
+glimpse(d)
+```
+
+
+*(a) Fit a linear regression to these data, using quap. Present and interpret the estimates. For every 10 units of increase in weight, how much taller does the model predict a child gets?*
+
+
+We start by fitting the linear model, because our data is now only comprised with children I change the beta for alpha, mean height, to be $\alpha \sim Normal(120, 40)$ and restrict the sigma to an upper bound of 60 cm since we expect a lot of variance in heights of children depending on their age.
+
+
+```{r}
+## weight will be centered around its mean -> at mean weight, alpha becomes the average height
+xbar <- mean(d$weight) 
+## fit
+mh2 <- quap(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- alpha + beta * (weight - xbar),
+    alpha ~ dnorm(120, 40),
+    beta ~ dlnorm(0, 1),
+    sigma ~ dunif(0, 60)
+  ),
+  data = d
+)
+
+precis(mh2, prob = 0.89)
+```
+
+The table can be used for interpreting some point-metrics summarising the posterior distribution for each parameter. The mean height of the children of the tribe ($\alpha$) is **expected** to be around 108 cm, with values between $107 \pm 109$ being within the 89% probability percentile - 0.89 of the probability densities in the posterior can be found in the range between these two parameters. Increases in weight by one unit are expected **to be associated** with an **expected** increase an height of around 2.72 cm ($\beta$), $2.61 \pm 2.83$. The $\sigma$ tells us the expected standard deviation of our sampling distribution - putting it differently, the standardized variance in heights in the children who participated in this study. According to this model it is expected to be around 8 cm. However, this parameter is only relevant if we actually estimate the expected mean of the sampling distribution.  Which we can ony obtain by computing the predicted expected heights given all possible combinations of regression lines in the posterior distribution. We need a posterior predictive distribution to derive the expected mean height in the sampling distribution. 
+
+
+For obtaining that value, we need to estimate the posterior predictive distribution.
+
+
+```{r}
+## sample from the posterior distribution
+post_samples <- MASS::mvrnorm(n = 1e4, mu = coef(mh2), Sigma = vcov(mh2)) %>%
+  as_tibble()
+## target weights
+target_weights <- seq(min(d$weight), max(d$weight), by = 1)
+
+## predicted scores
+set.seed(1234)
+predictions <- map_df(target_weights, function(weight){
+  
+  ## predictions
+  pred <- post_samples %>%
+    mutate(predicted_mu = alpha + beta * (weight - xbar),
+           predicted_height = rnorm(
+             n = nrow(.), 
+             mean = predicted_mu,
+             sd = sigma
+             ),
+           weight = weight,
+           iter = 1:nrow(.))
+  
+  return(pred)
+})
+
+hdi_height <- predictions %>%
+  group_by(weight) %>%
+  tidybayes::mean_hdi(predicted_height, .width = 0.89) 
+
+hdi_mu <- predictions %>%
+  group_by(weight) %>%
+  tidybayes::mean_hdi(predicted_mu, .width = 0.89)
+
+```
+
+Below we have a table with predicted values of the expected height given weight as well as the change in the expected height.
+
+
+```{r}
+hdi_mu %>% 
+  slice(-1) %>%
+  mutate(delta_pred_mu = predicted_mu - lag(predicted_mu)) %>%
+  dplyr::select(weight, predicted_mu, delta_pred_mu) %>%
+  head(6)
+```
+
+Which is reasonable. 
+
+  1. The mean of the posterior distribution for beta gives us the expected change in height given an increase in weight of one unit; since it is the mean of a log-normal distribution it is expected to be the value for beta with the highest probability density and, consequently, to show more often in the posterior predictive distribution. That explains the value of delta mu $x_i - x_{i - 1}$.
+  2. $\beta$ is a constant by definition since it is the slope of a linear function.
+  
+  
+Being so, an increase in 10 units can be assessed by $\beta * 10$ or by subtracting the expected heights for a range of 10 weights as we do below.
+
+```{r}
+hdi_mu %>% 
+  slice(2:12) %>%
+  mutate(delta_pred_mu = predicted_mu - lag(predicted_mu)) %>%
+  dplyr::select(weight, predicted_mu, delta_pred_mu) %>%
+  pull(delta_pred_mu) %>%
+  sum(na.rm = TRUE) %>%
+  round(2) %>%
+  paste0("increase of ", ., " cms")
+```
+
+
+(b) Plot the raw data, with height on the vertical axis and weight on the horizontal axis. Superimpose the MAP regression line and 89% interval for the mean. Also superimpose the 89% interval for predicted heights.
+
+
+```{r}
+### Plot predictions along with their uncertainty
+d %>% 
+  ggplot(aes(x = weight)) +
+  geom_ribbon(data = hdi_height, 
+              aes(ymin = .lower, ymax = .upper),
+              fill = "paleturquoise2") +
+  geom_smooth(data = hdi_mu,
+              aes(y = predicted_mu, ymin = .lower, ymax = .upper),
+              stat = "identity",
+              fill = "slateblue", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height), shape = 1, size = 2) +
+  ylab("height") +
+  coord_cartesian(xlim = range(d$weight),
+                  ylim = range(d$height)) +
+  theme_minimal() 
+```
+
+(c) *What aspects of the model fit concern you? Describe the kinds of assumptions you would change, if any, to improve the model. You don’t have to write any new code. Just explain what the model appears to be doing a bad job of, and what you hypothesize would be a better model.*
+
+
+Assuming constant growth rate might be problematic and age is correlated with weight. We should model beta so as to allow it to have a steeper slope for low levels of weight and allow it to gradually become flatter with increases in weight. A quadratic polynomial (second-degree) model would fit the data better as it models the expected height as a parabola.
+
+
+```{r}
+## weight will be centered around its mean -> at mean weight, alpha becomes the average height
+xbar <- mean(d$weight) 
+xsd <- sd(d$weight)
+## standardize
+d <- d %>%
+  mutate(weight_s = weight - xbar/xsd,
+         weight_s2 = weight_s^2)
+## fit
+mh3 <- quap(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- alpha + beta_1 * weight_s + beta_2 * weight_s2,
+    alpha ~ dnorm(120, 40),
+    beta_1 ~ dlnorm(0, 1),
+    beta_2 ~ dnorm(0, 20),
+    sigma ~ dunif(0, 60)
+  ),
+  data = d
+)
+
+precis(mh3, prob = 0.89)
+
+## sample from the posterior distribution
+post_samples <- MASS::mvrnorm(n = 1e4, mu = coef(mh3), Sigma = vcov(mh3)) %>%
+  as_tibble()
+## target weights
+target_weights <- seq(min(d$weight), max(d$weight), by = 1)
+weight_s <- target_weights - xbar/xsd
+weight_s2 <- weight_s^2
+
+## predicted scores
+set.seed(1234)
+predictions <- map2_df(weight_s, weight_s2, function(weight_s, weight_s2){
+  
+  ## predictions
+  pred <- post_samples %>%
+    mutate(predicted_mu = alpha + beta_1 * weight_s + beta_2 * weight_s2,
+           predicted_height = rnorm(
+             n = nrow(.), 
+             mean = predicted_mu,
+             sd = sigma
+             ),
+           weight_s = weight_s,
+           iter = 1:nrow(.))
+  
+  return(pred)
+})
+
+hdi_height <- predictions %>%
+  group_by(weight_s) %>%
+  tidybayes::mean_hdi(predicted_height, .width = 0.89) 
+
+hdi_mu <- predictions %>%
+  group_by(weight_s) %>%
+  tidybayes::mean_hdi(predicted_mu, .width = 0.89)
+
+d %>% 
+  ggplot(aes(x = weight_s)) +
+  geom_ribbon(data = hdi_height, 
+              aes(ymin = .lower, ymax = .upper),
+              fill = "paleturquoise2") +
+  geom_smooth(data = hdi_mu,
+              aes(y = predicted_mu, ymin = .lower, ymax = .upper),
+              stat = "identity",
+              fill = "slateblue", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height), shape = 1, size = 2) +
+  ylab("height") +
+  coord_cartesian(xlim = range(d$weight),
+                  ylim = range(d$height)) +
+  theme_minimal() 
+```
+
+
+**4H3.** *Suppose a colleague of yours, who works on allometry, glances at the practice problems just above. Your colleague exclaims, “That’s silly. Everyone knows that it’s only the logarithm of body weight that scales with height!” Let’s take your colleague’s advice and see what happens.*
+
+
+*(a) Model the relationship between height (cm) and the natural logarithm of weight (log-kg). Use the entire Howell1 data frame, all 544 rows, adults and non-adults. Fit this model, using quadratic approximation:*
+
+A good refresher on interpreting log-log, log-level, and leve-log models. 
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/aXBFKKh54Es" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Given that we are including the adults we change the priors back to the ones used in the book.
+
+```{r}
+rm(d)
+data(Howell1)
+d <- Howell1
+rm(Howell1)
+## log the weight
+d <- d %>%
+  mutate(weight_logged = log(weight))
+## mean for centering the variable around its mean
+xbar <- mean(d$weight_logged)
+## fit
+mh3 <- quap(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- alpha + beta * (weight_logged - xbar),
+    alpha ~ dnorm(178, 20),
+    beta ~ dnorm(0, 100),
+    sigma ~ dunif(0, 50)
+  ),
+  data = d
+)
+
+```
+
+
+
+Because we cented weight around its mean, alpha can again be interpreted as the expected height. Turning to the beta. A good heuristic for dividing level-logs is that if we divide $\beta/100$ we get the change in y given a $1\%$ increase in x. So in our case a 1% increase in weight is associated with an increase in expeted height of $\beta/100 = 41.09/100 = 0.4109$ cms
+
+
+```{r}
+precis(mh3, prob = 0.89)
+```
+
+
+
+*(b) Begin with this plot:*
+
+```{r}
+plot( height ~ weight , data=d, col=col.alpha(rangi2,0.4) )
+```
+
+*Then use samples from the quadratic approximate posterior of the model in (a) to superimpose on the plot: (1) the predicted mean height as a function of weight, (2) the 97% interval for the mean, and (3) the 97% interval for predicted heights*
+
+We start by fitting the level-log Guassian model again.
+
+```{r}
+## mean for centering the variable around its mean
+xbar <- mean(d$weight_logged)
+## fit
+mh3b <- quap(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- alpha + beta * (weight_logged - xbar),
+    alpha ~ dnorm(178, 20),
+    beta ~ dnorm(0, 100),
+    sigma ~ dunif(0, 50)
+  ),
+  data = d
+)
+
+precis(mh3b, prob = 0.97)
+```
+
+Next, we reproduce the plots from above but now with 0.97 credibility intervals for the mean height and height. We just have to twick the intervals. 
+
+
+```{r}
+## sample from the posterior distribution
+post_samples <- MASS::mvrnorm(n = 1e4, mu = coef(mh3b), Sigma = vcov(mh3b)) %>%
+  as_tibble()
+## target weights
+target_weights <- seq(min(d$weight), max(d$weight), by = 1)
+
+## predicted scores
+set.seed(1234)
+predictions <- map_df(target_weights, function(weight){
+  
+  ## predictions
+  pred <- post_samples %>%
+    mutate(predicted_mu = alpha + beta * (log(weight) - xbar),
+           predicted_height = rnorm(
+             n = nrow(.), 
+             mean = predicted_mu,
+             sd = sigma
+             ),
+           weight_logged = log(weight),
+           weight = weight,
+           iter = 1:nrow(.))
+  
+  return(pred)
+})
+
+hdi_height <- predictions %>%
+  group_by(weight) %>%
+  tidybayes::mean_hdi(predicted_height, .width = 0.97) 
+
+hdi_mu <- predictions %>%
+  group_by(weight) %>%
+  tidybayes::mean_hdi(predicted_mu, .width = 0.97)
+
+### Plot predictions along with their uncertainty
+d %>% 
+  ggplot(aes(x = weight)) +
+  geom_ribbon(data = hdi_height, 
+              aes(ymin = .lower, ymax = .upper),
+              fill = "paleturquoise2") +
+  geom_smooth(data = hdi_mu,
+              aes(y = predicted_mu, ymin = .lower, ymax = .upper),
+              stat = "identity",
+              fill = "slateblue", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height), shape = 1, size = 2) +
+  ylab("height") +
+  coord_cartesian(xlim = range(d$weight),
+                  ylim = range(d$height)) +
+  theme_minimal()
+```
+
+
+**4H4.** *Plot the prior predictive distribution for the polynomial regression model in the chapter. You can modify the code that plots the linear regression prior predictive distribution. Can you modify the prior distributions of α, β1, and β2 so that the prior predictions stay within the biologically reasonable outcome space? That is to say: Do not try to fit the data by hand. But do try to keep the curves consistent with what you know about height and weight, before seeing these exact data.*
+
+We are going to simulate a prior predictive distribution for the following model.
+
+$$
+h_i \sim \text{Normal}(\mu_i, \sigma) \\
+\mu_i = \alpha + \beta_1 \text{weight_s}_i + \beta_2\text{weight_s}_i^2,\\\text{   where } \text{weight_s} = \frac{x_i - \bar{x}}{\sigma}    \\
+\alpha \sim \text{Normal}(178, 20) \\
+\beta_1 \sim \text{Log-Normal}(0, 1) \\
+\beta_2 \sim \text{Normal}(0,1) \\
+\sigma \sim \text{Uniform}(0, 50)
+$$
+
+Not necessarly asked, but it points important step in research design: simuating plausible observations for our sample, in this case, simulating reasonable heights and weights data for the tribe without having observed the data. 
+
+Random detour, start.
+
+  - We will assume the sample to be of $1000$ people;
+  - Heights vary with age and gender $height_{gender, age} \sim N(\mu, \sigma)$.
+  - Will assume for now that women compose about 50% of the popuation and have less 8 cms than men of the same age to describe this, hence $\text{women} \sim \text{Binomial}(1000, 0.5)$
+  - As for age, imagine we are sampling individuals which can be arranged into 4 groups depending on their age intervals **toddler**, *child/teen*, *remaining* and remaining. The grouping is based on expected heights. As for the sampling, I am assuming different probabilities for sampling one individual of each group, a multinomial distribution with the respective probabilities ([mildly inspired by this report](http://www.statsbots.org.bw/sites/default/files/publications/Botswana%20Demographic%20Survey%20Report%202017.pdf)), $P(toddler) = .1$, $P(child)= .30$, $P(remaining) = 0.6$. 
+  - The apriori heights given age-group and gender (standard deviations are the same across groups):
+  
+$$
+height_{men, toddler} \sim N(60, 5) \\
+height_{men, child} \sim N(120, 40) \\
+height_{men, remaining} \sim N(170, 20)  \\
+$$
+
+Simulate 1000 heights
+
+```{r}
+## table with the infor for the distributions
+set.seed(1234)
+heights <- map_df(1:1000, function(i){
+  
+  ## sample gender
+  gender <- rbinom(1, 1, 0.5)
+  ## sample age
+  age <- sample(c("1", "2", "3"), 1, replace=TRUE,  prob = c(0.1, 0.3, 0.6))
+  
+  if (gender == 1) {
+    
+    if (age == "1") {
+      
+      height <- rnorm(1, mean = 60, 5)
+      
+    } else if (age == "2") {
+      
+      height <- rnorm(1, mean = 120, 40)
+      
+    } else {
+      
+      height <- rnorm(1, mean = 170, 20)
+      
+    }
+    
+    
+  } else {
+    
+    if (age == "1") {
+      
+      height <- rnorm(1, mean = 60 - 8, 5)
+      
+    } else if (age == "2") {
+      
+      height <- rnorm(1, mean = 120 - 8, 40)
+      
+    } else {
+      
+      height <- rnorm(1, mean = 170 - 8, 20)
+      
+    }
+ }
+  
+  return(tibble(person = i,
+                height = height))
+  
+  
+})
+```
+
+
+Pretty close!
+
+```{r}
+plot(density(heights$height))
+plot(density(d$height))
+```
+
+Next we do the same for heights. Women now weight, on average, less 5 kg.
+
+$$
+height_{men, toddler} \sim N(20, 5) \\
+height_{men, child} \sim N(50, 20) \\
+height_{men, remaining} \sim N(60, 10)  \\
+$$
+
+
+```{r eval=FALSE, include=FALSE}
+## table with the infor for the distributions
+set.seed(1234)
+weights <- map_df(1:1000, function(i){
+  
+  ## sample gender
+  gender <- rbinom(1, 1, 0.5)
+  ## sample age
+  age <- sample(c("1", "2", "3"), 1, replace=TRUE,  prob = c(0.1, 0.3, 0.6))
+  
+  if (gender == 1) {
+    
+    if (age == "1") {
+      
+      weight<- rnorm(1, mean = 20, 5)
+      
+    } else if (age == "2") {
+      
+      weight <- rnorm(1, mean = 50, 20)
+      
+    } else {
+      
+      weight <- rnorm(1, mean = 60, 10)
+      
+    }
+    
+    
+  } else {
+    
+    if (age == "1") {
+      
+      weight <- rnorm(1, mean = 20 - 5, 5)
+      
+    } else if (age == "2") {
+      
+      weight <- rnorm(1, mean = 50 - 5, 20)
+      
+    } else {
+      
+      weight <- rnorm(1, mean = 60 - 5, 10)
+      
+    }
+ }
+  
+  return(tibble(person = i,
+                weight = weight))
+  
+  
+})
+```
+
+
+Looks good enough.
+
+```{r}
+plot(density(weights$weight))
+plot(density(d$weight))
+```
+
+Detour over. Back to the exercise at hand:
+
+  1. simulate priors;
+  2. estimate the predicted mean height;
+  3. Draw heights from it
+  
+**TO-DO**
+
+
+```{r eval=FALSE, include=FALSE}
+fake_data <- left_join(heights, weights)
+
+fake_data <- fake_data %>%
+  mutate(weight_s = weight - mean(weight)/sd(weight),
+         weight_s2 = weight_s^2)
+
+mh4 <- quap(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- alpha + beta_1 * weight_s + beta_2 * weight_s2,
+    alpha ~ dnorm(178, 20),
+    beta_1 ~ dlnorm(0,1),
+    beta_2 ~ dnorm(0,1),
+    sigma ~ dunif(0, 50)
+  ),
+  data = fake_data
+)
+
+summary(mh4)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+### Generate predicted mean heights and predicted heights
+## Step 1 - sample 1000 combinations of parameters from the posterior
+set.seed(123)
+post_samples <- MASS::mvrnorm(n = 1e3, mu = coef(mh4), Sigma = vcov(mh4)) %>%
+  as_tibble()
+
+## step 2 - create the grid of relevant weight values
+weight_sim <- seq(from=-2.2, to=2, length.out=30)
+weight_sim2 <- weight_sim^2
+### step 3, for each observation, estimate \mu_i and predicted height for all posterior samples \alpha and \beta
+## now using purrr, for speedt 
+predicted_height <- map2_df(weight_sim, weight_sim2, function(x_i, x_i2){
+  ## estimate the predicted mean given data, use the posterior predicted mean and sigma to samples observations from the likelihood function/sampling distributions, a gaussian 
+  current_pred <- post_samples %>% 
+    mutate(predicted_mean_height = alpha + beta_1 * x_i + beta_2 * x_i2,
+           predicted_height = rnorm(
+             n = nrow(.),
+             mean = predicted_mean_height,
+             sd = sigma
+            ),
+      weight_s = x_i,
+      weight_s2 = x_i2,
+      iter = 1:n()) 
+  
+  return(current_pred)
+  
+})
+
+### Compute 0.89 highest density intervals for the predicted mean heights and predicted heights
+(hdi_height <- predicted_height %>%
+  group_by(weight_s) %>%
+  tidybayes::mean_hdi(predicted_height, .width = 0.89))
+
+(hdi_mu <- predicted_height %>%
+  group_by(weight_s) %>%
+  tidybayes::mean_hdi(predicted_mean_height, .width = 0.89) %>%
+  paged_table())
+
+### Plot predictions along with their uncertainty
+fake_data %>%
+  ggplot(aes(x = weight_s)) +
+  geom_ribbon(data = hdi_height, 
+              aes(ymin = .lower, ymax = .upper),
+              fill = "paleturquoise2") +
+  geom_smooth(data = hdi_mu,
+              aes(y = predicted_mean_height, ymin = .lower, ymax = .upper),
+              stat = "identity",
+              fill = "slateblue", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height), color = "navyblue", shape = 1, size = 2) +
+  ylab("height") +
+  coord_cartesian(xlim = range(fake_data$weight_s),
+                  ylim = range(fake_data$height)) +
+  theme_minimal()
+```
+
+
 # Apendix A - Table of Distributions
 
 Borrowed from this amazing [cheatsheet](https://github.com/wzchen/probability_cheatsheet).
@@ -4058,6 +5414,7 @@ Borrowed from this amazing [cheatsheet](https://github.com/wzchen/probability_ch
 
 
 ![](cache/figs/dist_tab.png)                              
+
 
 
 
